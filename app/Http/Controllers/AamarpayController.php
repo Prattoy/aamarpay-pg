@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Payment;
+use App\Models\PaymentLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -310,6 +311,15 @@ class AamarpayController extends Controller
             return ['status' => false, 'message' => 'Webhook URL missing'];
         }
 
+        //Save log in db
+        $payment_log = new PaymentLog();
+        $payment_log->state = 'Notify Service';
+        $payment_log->service_from = $payment->service_from;
+        $payment_log->reference_id = $payment->reference_id;
+        $payment_log->pg_txn_id = $payment->pg_txn_id;
+        $payment_log->bank_txn_id = $payment->bank_txn_id;
+        $payment_log->save();
+
         try {
             // Get service's webhook secret from config
             $service = $this->getServiceConfig($payment->service_from);
@@ -333,6 +343,10 @@ class AamarpayController extends Controller
                 'metadata' => $payment->metadata ? json_decode($payment->metadata, true) : null,
             ];
 
+            //Save log in db
+            $payment_log->request_payload = json_encode($payload);
+            $payment_log->save();
+
             // Generate HMAC signature
             $signature = $this->generateWebhookSignature($payload, $webhookSecret);
 
@@ -346,8 +360,12 @@ class AamarpayController extends Controller
                 ->retry(3, 200) // Retry 3 times with 200ms delay
                 ->post($payment->webhook_url, $payload);
 
+            //Save log in db
+            $payment_log->response_payload = $response->body();
+            $payment_log->save();
+
             $service_provided = 'N';
-            if ($response->json()['status']) {
+            if ($response->json()['status'] === 'success') {
                 $service_provided = 'Y';
             }
 
@@ -381,6 +399,10 @@ class AamarpayController extends Controller
                 'webhook_url' => $payment->webhook_url,
                 'error' => $e->getMessage()
             ]);
+
+            //Save log in db
+            $payment_log->response_payload = $e->getMessage();
+            $payment_log->save();
 
             return ['status' => false, 'message' => 'Service Webhook delivery exception occurred'];
             // Queue for retry (optional but recommended)
